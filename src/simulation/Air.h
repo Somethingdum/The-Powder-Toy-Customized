@@ -1,8 +1,10 @@
 #pragma once
 #include "SimulationConfig.h"
+#include <memory>
 
 class Simulation;
 struct RenderableSimulation;
+class RowWorkerPool;
 
 class Air
 {
@@ -31,4 +33,11 @@ public:
 	void Invert();
 	void ApproximateBlockAirMaps(Rect<int> targetBlocks);
 	Air(Simulation & sim);
+	~Air();
+private:
+	// Lazily created on first update_air(); only the ticking Simulation ever
+	// spawns worker threads. Defaults to the performance-core count (see
+	// Air.cpp), overridable via the TPT_AIR_THREADS environment variable.
+	std::unique_ptr<RowWorkerPool> airPool;
+	RowWorkerPool &AirPool();
 };

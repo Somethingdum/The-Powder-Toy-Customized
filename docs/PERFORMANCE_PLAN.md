@@ -95,19 +95,27 @@ Then build and fix any fallout:
 
 The wins that actually use your 24 cores **safely**:
 
-### 2a. Air pressure/velocity/heat (`src/simulation/Air.cpp`)
-- `update_air` / `update_airh` are currently **in-place (Gauss-Seidel)**
-  stencils: row `y` reads rows `y-1`/`y+1` of arrays it also writes. They are
-  **not** embarrassingly parallel as written.
-- **Convert to double-buffered (Jacobi):** read from old `pv/vx/vy`, write to a
-  new buffer, then swap. This makes each pass embarrassingly parallel.
-  - Tradeoff: Jacobi differs slightly from Gauss-Seidel — air settles a touch
-    differently. Acceptable (already off stock behavior).
-- **Parallelize** the converted passes by splitting the `y` range into
-  contiguous row-blocks across a thread pool (one block per worker). No halos
-  needed because reads come from the immutable old buffer.
+### 2a. Air pressure/velocity (`src/simulation/Air.cpp::update_air`) — DONE
+- On inspection the dominant passes turned out **better than feared** and
+  needed **no Jacobi conversion** (results stay bit-identical to serial):
+  - *pressure pass*: reads `vx/vy` (not written here), writes only `pv[y][x]`.
+  - *velocity pass*: reads `pv` (not written here), writes only `vx/vy[y][x]`.
+  - *advection pass* (the expensive 3x3 kernel + ray-march): already writes to
+    separate `ovx/ovy/opv` buffers then `memcpy`s back — already double-buffered.
+- Each pass's outer `y` loop is split into contiguous row-blocks via
+  `RowWorkerPool` (`src/common/RowWorkerPool.h`), with the implicit barrier
+  between passes preserved (`ForRows` blocks until done). Because no per-cell
+  arithmetic changed and each cell reads only pass-invariant inputs, output is
+  **bit-identical** to the serial loop regardless of thread count.
 - At CELL=2 there are ~1.0M cells, so this is exactly where the extra cost
   lives — biggest payoff here.
+
+### 2b. Ambient heat (`update_airh`) — left SERIAL (intentionally)
+- Unlike `update_air`, the heat pass writes `vx[y][x]`/`vy[y][x]` **in place**
+  while also reading `vx/vy` neighbours (convection), making it genuinely
+  Gauss-Seidel. Parallelizing it would change results. It is also the optional
+  ambient-heat path, not the always-on cost, so it is deliberately untouched
+  for now. Revisit with a double-buffer conversion if it becomes a bottleneck.
 
 ### 2b. Gravity
 - Already FFT-threaded (`src/simulation/gravity/Fft.cpp`). Verify the FFT thread

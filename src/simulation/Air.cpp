@@ -2,8 +2,11 @@
 #include "Simulation.h"
 #include "ElementClasses.h"
 #include "common/tpt-rand.h"
+#include "common/RowWorkerPool.h"
 #include <cmath>
 #include <algorithm>
+#include <cstdlib>
+#include <thread>
 
 void Air::make_kernel(void) //used for velocity
 {
@@ -294,7 +297,10 @@ void Air::update_air(void)
 			}
 		}
 
-		for (auto y=1; y<YCELLS-1; y++) //pressure adjustments from velocity
+		// Reads vx/vy (not written here) and writes only pv[y][x], so cells are
+		// independent within this pass and row-block partitioning is bit-identical.
+		AirPool().ForRows(1, YCELLS-1, [&](int yBegin, int yEnd) {
+		for (auto y=yBegin; y<yEnd; y++) //pressure adjustments from velocity
 		{
 			for (auto x=1; x<XCELLS-1; x++)
 			{
@@ -305,8 +311,12 @@ void Air::update_air(void)
 				pv[y][x] += dp*AIR_TSTEPP * 0.5f;;
 			}
 		}
+		});
 
-		for (auto y=1; y<YCELLS-1; y++) //velocity adjustments from pressure
+		// Reads pv (not written here) and writes only vx[y][x]/vy[y][x], so cells
+		// are independent within this pass and row-block partitioning is bit-identical.
+		AirPool().ForRows(1, YCELLS-1, [&](int yBegin, int yEnd) {
+		for (auto y=yBegin; y<yEnd; y++) //velocity adjustments from pressure
 		{
 			for (auto x=1; x<XCELLS-1; x++)
 			{
@@ -324,8 +334,13 @@ void Air::update_air(void)
 					vy[y][x] = 0;
 			}
 		}
+		});
 
-		for (auto y=0; y<YCELLS; y++) //update velocity and pressure
+		// Reads vx/vy/pv (unchanged this pass) and writes only the separate
+		// ovx/ovy/opv buffers, so this pass is already double-buffered and
+		// row-block partitioning is bit-identical.
+		AirPool().ForRows(0, YCELLS, [&](int yBegin, int yEnd) {
+		for (auto y=yBegin; y<yEnd; y++) //update velocity and pressure
 		{
 			for (auto x=0; x<XCELLS; x++)
 			{
@@ -470,6 +485,7 @@ void Air::update_air(void)
 				opv[y][x] = dp;
 			}
 		}
+		});
 		memcpy(vx, ovx, sizeof(vx));
 		memcpy(vy, ovy, sizeof(vy));
 		memcpy(pv, opv, sizeof(pv));
@@ -552,4 +568,36 @@ Air::Air(Simulation & simulation):
 	std::fill(&ohv   [0][0], &ohv   [0][0] + NCELL, 0.0f);
 	std::fill(&sim.pv[0][0], &sim.pv[0][0] + NCELL, 0.0f);
 	std::fill(&opv   [0][0], &opv   [0][0] + NCELL, 0.0f);
+}
+
+Air::~Air() = default;
+
+RowWorkerPool &Air::AirPool()
+{
+	if (!airPool)
+	{
+		// Default to the performance-core count. On hybrid CPUs a per-pass
+		// barrier means the slowest worker gates the whole pass, so loading
+		// slow E-cores alongside fast P-cores hurts more than it helps; cap at
+		// 8 (a typical P-core count). Overridable via TPT_AIR_THREADS.
+		int threads = 8;
+		if (const char *env = std::getenv("TPT_AIR_THREADS"))
+		{
+			int requested = std::atoi(env);
+			if (requested >= 1)
+			{
+				threads = requested;
+			}
+		}
+		else
+		{
+			unsigned int hc = std::thread::hardware_concurrency();
+			if (hc)
+			{
+				threads = std::min(8u, hc);
+			}
+		}
+		airPool = std::make_unique<RowWorkerPool>(threads);
+	}
+	return *airPool;
 }
