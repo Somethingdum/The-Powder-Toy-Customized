@@ -1,7 +1,13 @@
 # Performance & Resolution Plan
 
-Target hardware: 24-core CPU, 32 GB RAM. Goal: large, fine-grained, fast,
-smooth simulation that uses the cores where it is safe to do so.
+Target hardware: hybrid 24-core CPU (**8 Performance cores + 16 Efficiency
+cores**), 32 GB RAM. Goal: large, fine-grained, fast, smooth simulation that
+uses the cores where it is safe to do so.
+
+> **Hybrid-core note.** The parallel physics work is fork-join with a barrier
+> every tick, so it finishes only as fast as the *slowest* worker. Mixing slow
+> E-cores with fast P-cores creates stragglers that stall every tick. Default
+> worker count therefore targets the **8 P-cores**, not all 24. See Phase 2.
 
 > **Save compatibility is intentionally abandoned.** Changing `XRES`/`YRES`
 > and `CELL` makes saves incompatible with stock TPT and the online save
@@ -107,10 +113,20 @@ The wins that actually use your 24 cores **safely**:
 - Already FFT-threaded (`src/simulation/gravity/Fft.cpp`). Verify the FFT thread
   count scales up; bump it toward core count if it is hardcoded low.
 
-### Infrastructure
+### Infrastructure (hybrid-core aware)
 - Add a small reusable thread pool (or use OpenMP `parallel for`) rather than
   spawning threads each tick.
-- Make worker count configurable (default = hardware concurrency, capped).
+- **Default worker count = 8 (the P-cores), NOT 24.** A per-tick barrier means
+  the slowest worker gates the whole pass; E-cores would be stragglers and a
+  9th+ thread on an E-core can make a tick *slower* than 8 P-core threads.
+- Where the OS allows, pin workers to P-cores (Linux: `sched_setaffinity`;
+  Windows: `SetThreadSelectedCpuSetMasks` / `SetThreadAffinityMask`). P/E
+  detection is fiddly cross-platform, so ship a configurable worker count with
+  default 8 and let the affinity pinning be best-effort.
+- Give E-cores a role instead of wasting them: run *non-barrier* background work
+  there (e.g. the existing separate render-thread sim copy, save
+  rendering/thumbnails, autosave) so the 16 E-cores stay useful without dragging
+  the physics barrier.
 
 **Deliverable:** air/heat/gravity solvers running across N cores; measurable
 FPS gain on a pressure/heat-heavy scene.
