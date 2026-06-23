@@ -202,3 +202,47 @@ Not in current scope. Recorded for later.
 
 Each phase is an independent commit on `claude/cool-clarke-lgak94`, with a
 quick before/after FPS note in the commit message.
+
+---
+
+## Build & test (Phases 0-2, verified-here recipe)
+
+Exact configuration used to compile and run-test this branch:
+
+```sh
+# from the repo root, on branch claude/cool-clarke-lgak94
+CFLAGS="-march=native -O3" CXXFLAGS="-march=native -O3" \
+  meson setup build -Dbuildtype=release -Dlto=true -Dignore_updates=true
+ninja -C build
+./build/powder            # Linux/macOS;  build\powder.exe on Windows
+```
+- `-march=native` tunes for the local CPU (non-portable binary — fine for
+  personal use). `-Dlto=true` is TPT's own LTO option.
+- Deps: a C++17 compiler, `meson`, `ninja`, and SDL2; most other libraries are
+  pulled in as meson subprojects automatically.
+
+### Benchmark the parallel air solver (Phase 2)
+The win shows up on **pressure/air-heavy scenes** (explosions, lots of GAS/PRES,
+fans). Compare:
+```sh
+TPT_AIR_THREADS=1 ./build/powder   # serial air solver (baseline)
+./build/powder                     # default: up to 8 P-core threads
+TPT_AIR_THREADS=12 ./build/powder  # try your exact P-core count if not 8
+```
+Watch the on-screen FPS. If a scene is mostly empty particles with little air
+activity, expect little difference — the solver only dominates when the air
+grid is doing work (and at CELL=2 there are ~1M cells, so it usually is).
+
+### About 240 FPS right now (before Phase 3)
+Two caps live in **Options**: *Simulation framerate cap* and *Rendering
+framerate cap* (both go to 1000).
+- Sim 60 + Render 240 today = duplicate frames, no visible benefit (this is
+  what Phase 3's interpolation fixes).
+- Sim 240 + Render 240 = smooth, but physics runs ~4x faster (everything moves
+  4x quicker in wall-clock time).
+- Genuine smooth-240-at-normal-speed needs Phase 3 (render interpolation).
+
+### What to check visually
+- Sim opens at 2560x1600 (window 2577x1640 incl. chrome — use fullscreen).
+- Place sand/water/pressure; confirm physics behaves normally and the air
+  solver result looks the same with and without `TPT_AIR_THREADS=1`.
